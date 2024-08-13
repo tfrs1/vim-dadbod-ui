@@ -240,6 +240,7 @@ function! s:dbui.generate_new_db_entry(db) abort
   let buffers = filter(copy(self.old_buffers), 'fnamemodify(v:val, ":e") =~? "^".a:db.name."-" || fnamemodify(v:val, ":t") =~? "^".a:db.name."-"')
 
   let db = {
+        \ 'pass': a:db.pass,
         \ 'url': a:db.url,
         \ 'conn': '',
         \ 'conn_error': '',
@@ -288,7 +289,7 @@ function! s:dbui.populate_from_global_variable() abort
   if exists('g:db') && !empty(g:db)
     let url = self.resolve_url_global_variable(g:db)
     let gdb_name = split(url, '/')[-1]
-    call self.add_if_not_exists(gdb_name, url, 'g:dbs')
+    call self.add_if_not_exists(gdb_name, url, 'g:dbs', '')
   endif
 
   if !exists('g:dbs') || empty(g:dbs)
@@ -297,13 +298,18 @@ function! s:dbui.populate_from_global_variable() abort
 
   if type(g:dbs) ==? type({})
     for [db_name, Db_url] in items(g:dbs)
-      call self.add_if_not_exists(db_name, self.resolve_url_global_variable(Db_url), 'g:dbs')
+      call self.add_if_not_exists(db_name, self.resolve_url_global_variable(Db_url), 'g:dbs', '')
     endfor
     return self
   endif
 
   for db in g:dbs
-    call self.add_if_not_exists(db.name, self.resolve_url_global_variable(db.url), 'g:dbs')
+    let Pass = ''
+    if has_key(db, 'pass')
+      let Pass = db.pass
+    endif
+
+    call self.add_if_not_exists(db.name, self.resolve_url_global_variable(db.url), 'g:dbs', Pass)
   endfor
 
   return self
@@ -326,7 +332,7 @@ function! s:dbui.populate_from_dotenv() abort
   for [name, url] in items(all_envs)
     if stridx(name, prefix) != -1
       let db_name = tolower(join(split(name, prefix)))
-      call self.add_if_not_exists(db_name, url, 'dotenv')
+      call self.add_if_not_exists(db_name, url, 'dotenv', '')
     endif
   endfor
 endfunction
@@ -350,7 +356,7 @@ function! s:dbui.populate_from_env() abort
           \ printf('Found %s variable for db url, but unable to parse the name. Please provide name via %s', g:db_ui_env_variable_url, g:db_ui_env_variable_name))
   endif
 
-  call self.add_if_not_exists(env_name, env_url, 'env')
+  call self.add_if_not_exists(env_name, env_url, 'env', '')
   return self
 endfunction
 
@@ -371,19 +377,20 @@ function! s:dbui.populate_from_connections_file() abort
   let file = db_ui#utils#readfile(self.connections_path)
 
   for conn in file
-    call self.add_if_not_exists(conn.name, conn.url, 'file')
+    call self.add_if_not_exists(conn.name, conn.url, 'file', '')
   endfor
 
   return self
 endfunction
 
-function! s:dbui.add_if_not_exists(name, url, source) abort
+function! s:dbui.add_if_not_exists(name, url, source, Pass) abort
   let existing = get(filter(copy(self.dbs_list), 'v:val.name ==? a:name && v:val.source ==? a:source'), 0, {})
   if !empty(existing)
     return db_ui#notifications#warning(printf('Warning: Duplicate connection name "%s" in "%s" source. First one added has precedence.', a:name, a:source))
   endif
+
   return add(self.dbs_list, {
-        \ 'name': a:name, 'url': db_ui#resolve(a:url), 'source': a:source, 'key_name': printf('%s_%s', a:name, a:source)
+        \ 'pass': a:Pass, 'name': a:name, 'url': db_ui#resolve(a:url), 'source': a:source, 'key_name': printf('%s_%s', a:name, a:source)
         \ })
 endfunction
 
@@ -402,7 +409,13 @@ function! s:dbui.connect(db) abort
   try
     let query_time = reltime()
     call db_ui#notifications#info('Connecting to db '.a:db.name.'...')
-    let a:db.conn = db#connect(a:db.url)
+
+    let url = a:db.url
+    if type(a:db.pass) ==? type(function('tr'))
+      let url = substitute(url, '@', ':' . call(a:db.pass, []) . '@', '')
+    endif
+
+    let a:db.conn = db#connect(url)
     let a:db.conn_error = ''
     call self.populate_schema_info(a:db)
     call db_ui#notifications#info('Connected to db '.a:db.name.' after '.split(reltimestr(reltime(query_time)))[0].' sec.')
